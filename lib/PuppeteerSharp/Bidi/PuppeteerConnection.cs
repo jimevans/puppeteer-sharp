@@ -23,6 +23,7 @@
 #if !CDP_ONLY
 
 using System;
+using System.Buffers;
 using System.Threading;
 using System.Threading.Tasks;
 using PuppeteerSharp.Transport;
@@ -55,7 +56,7 @@ internal class PuppeteerConnection : BidiConnection
     public override bool IsActive => _isActive;
 
     /// <inheritdoc/>
-    public override ConnectionType ConnectionType => ConnectionType.WebSocket;
+    public override ConnectionKind ConnectionKind => ConnectionKind.WebSocket;
 
     /// <inheritdoc/>
     public override Task StartAsync(string connectionString, CancellationToken cancellationToken = default)
@@ -80,10 +81,12 @@ internal class PuppeteerConnection : BidiConnection
     }
 
     /// <inheritdoc/>
-    public override Task SendDataAsync(byte[] data, CancellationToken cancellationToken = default)
+    public override Task SendDataAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
-        return _transport.SendAsync(data);
+        return _transport.SendAsync(data.ToArray());
     }
+
+    protected override Task SendConnectionDataAsync(ReadOnlyMemory<byte> messageBuffer, CancellationToken cancellationToken = default) => throw new NotImplementedException();
 
     /// <inheritdoc/>
     protected override Task ReceiveDataAsync()
@@ -108,7 +111,8 @@ internal class PuppeteerConnection : BidiConnection
     {
         try
         {
-            await InvocableConnectionDataReceivedObservableEvent.InvokeNotifyObserversAsync(new ConnectionDataReceivedEventArgs(e.Message)).ConfigureAwait(false);
+            var owner = MemoryPool<byte>.Shared.Rent(e.Message.Length);
+            await InvocableConnectionDataReceivedObservableEvent.InvokeNotifyObserversAsync(new ConnectionDataReceivedEventArgs(owner, e.Message.Length)).ConfigureAwait(false);
         }
         catch
         {
