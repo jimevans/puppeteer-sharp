@@ -61,8 +61,10 @@ internal class PuppeteerConnection : BidiConnection
     /// <inheritdoc/>
     public override Task StartAsync(string connectionString, CancellationToken cancellationToken = default)
     {
-        // The transport is already connected (it was created by the TransportFactory)
-        // We just need to mark ourselves as active and set the connection string
+        // The transport is already connected (it was created by the TransportFactory), so there is
+        // nothing to open here. StopAsync cancels the connection source unconditionally, so reset it
+        // first; otherwise a reused connection would start with cancellation already requested.
+        ResetConnectionCancellation();
         ConnectionString = connectionString;
         _isActive = true;
         return Task.CompletedTask;
@@ -71,6 +73,8 @@ internal class PuppeteerConnection : BidiConnection
     /// <inheritdoc/>
     public override Task StopAsync(CancellationToken cancellationToken = default)
     {
+        // Signal any in-flight send to stop before the transport goes away.
+        CancelConnection();
         _transport.MessageReceived -= OnTransportMessageReceived;
         _transport.Closed -= OnTransportClosed;
         _transport.StopReading();
@@ -81,12 +85,13 @@ internal class PuppeteerConnection : BidiConnection
     }
 
     /// <inheritdoc/>
-    public override Task SendDataAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+    protected override Task SendConnectionDataAsync(ReadOnlyMemory<byte> messageBuffer, CancellationToken cancellationToken = default)
     {
-        return _transport.SendAsync(data.ToArray());
+        // IConnectionTransport.SendAsync takes a byte[], so the buffer has to be copied. The base
+        // SendDataAsync has already checked that the connection is active, raised the trace log
+        // message, and taken the send semaphore that makes this call atomic.
+        return _transport.SendAsync(messageBuffer.ToArray());
     }
-
-    protected override Task SendConnectionDataAsync(ReadOnlyMemory<byte> messageBuffer, CancellationToken cancellationToken = default) => throw new NotImplementedException();
 
     /// <inheritdoc/>
     protected override Task ReceiveDataAsync()
@@ -111,7 +116,12 @@ internal class PuppeteerConnection : BidiConnection
     {
         try
         {
-            var owner = MemoryPool<byte>.Shared.Rent(e.Message.Length);
+            // TakeOwnershipOfReceivedData copies the data for the message into a pool-based memory
+            // block. Ownership of that block transfers to the event args: the consumer wraps it in an
+            // IncomingMessage that is queued and parsed after this call returns, and that message
+            // returns the block to the pool when it is disposed. Disposing it here would return the
+            // block while the message still refers to it, so it is deliberately not disposed.
+            var owner = TakeOwnershipOfReceivedData(e.Message, e.Message.Length);
             await InvocableConnectionDataReceivedObservableEvent.InvokeNotifyObserversAsync(new ConnectionDataReceivedEventArgs(owner, e.Message.Length)).ConfigureAwait(false);
         }
         catch
