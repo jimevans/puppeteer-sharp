@@ -68,7 +68,6 @@ internal class PuppeteerConnection : BidiConnection
     /// <inheritdoc/>
     protected override Task StopConnectionAsync(CancellationToken cancellationToken = default)
     {
-        // Signal any in-flight send to stop before the transport goes away.
         _transport.MessageReceived -= OnTransportMessageReceived;
         _transport.Closed -= OnTransportClosed;
         _transport.StopReading();
