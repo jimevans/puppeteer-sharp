@@ -59,27 +59,20 @@ internal class PuppeteerConnection : BidiConnection
     public override ConnectionKind ConnectionKind => ConnectionKind.WebSocket;
 
     /// <inheritdoc/>
-    public override Task StartAsync(string connectionString, CancellationToken cancellationToken = default)
+    protected override Task StartConnectionAsync(CancellationToken cancellationToken = default)
     {
-        // The transport is already connected (it was created by the TransportFactory), so there is
-        // nothing to open here. StopAsync cancels the connection source unconditionally, so reset it
-        // first; otherwise a reused connection would start with cancellation already requested.
-        ResetConnectionCancellation();
-        ConnectionString = connectionString;
         _isActive = true;
         return Task.CompletedTask;
     }
 
     /// <inheritdoc/>
-    public override Task StopAsync(CancellationToken cancellationToken = default)
+    protected override Task StopConnectionAsync(CancellationToken cancellationToken = default)
     {
         // Signal any in-flight send to stop before the transport goes away.
-        CancelConnection();
         _transport.MessageReceived -= OnTransportMessageReceived;
         _transport.Closed -= OnTransportClosed;
         _transport.StopReading();
         _transport.Dispose();
-        ConnectionString = string.Empty;
         _isActive = false;
         return Task.CompletedTask;
     }
@@ -116,13 +109,9 @@ internal class PuppeteerConnection : BidiConnection
     {
         try
         {
-            // TakeOwnershipOfReceivedData copies the data for the message into a pool-based memory
-            // block. Ownership of that block transfers to the event args: the consumer wraps it in an
-            // IncomingMessage that is queued and parsed after this call returns, and that message
-            // returns the block to the pool when it is disposed. Disposing it here would return the
-            // block while the message still refers to it, so it is deliberately not disposed.
-            var owner = TakeOwnershipOfReceivedData(e.Message, e.Message.Length);
-            await InvocableConnectionDataReceivedObservableEvent.InvokeNotifyObserversAsync(new ConnectionDataReceivedEventArgs(owner, e.Message.Length)).ConfigureAwait(false);
+            using var messageBuffer = new MessageBuffer();
+            messageBuffer.Append(e.Message);
+            await this.NotifyDataReceivedObserverAsync(messageBuffer).ConfigureAwait(false);
         }
         catch
         {
